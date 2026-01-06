@@ -297,10 +297,11 @@
         '.block_count',
         '.embedding_length',
         'split.count',
+        'general.parameter_count',
       ];
 
       const params = {};
-      const found = { attention_heads: false, kv_heads: false, hidden_layers: false, hidden_size: false, split_count: false };
+      const found = { attention_heads: false, kv_heads: false, hidden_layers: false, hidden_size: false, split_count: false, parameter_count: false };
 
       for (let i = 0; i < metadataCount && !source.eof(); i++) {
         let key;
@@ -330,6 +331,12 @@
               const value = await readU64(source); params.split_count = value; found.split_count = true; if (verbose) log(`  Found split_count: ${value} (from key: ${key})`);
             } else if (type === GGUFType.UINT32 || type === GGUFType.INT32) {
               const value = await readU32(source); params.split_count = value; found.split_count = true; if (verbose) log(`  Found split_count: ${value} (from key: ${key})`);
+            } else { await skipValue(source, type); }
+          } else if (matchedSuffix === 'general.parameter_count') {
+            if (type === GGUFType.UINT64 || type === GGUFType.INT64) {
+              const value = await readU64(source); params.parameter_count = value; found.parameter_count = true; if (verbose) log(`  Found parameter_count: ${value} (from key: ${key})`);
+            } else if (type === GGUFType.UINT32 || type === GGUFType.INT32) {
+              const value = await readU32(source); params.parameter_count = value; found.parameter_count = true; if (verbose) log(`  Found parameter_count: ${value} (from key: ${key})`);
             } else { await skipValue(source, type); }
           } else { await skipValue(source, type); }
         } else { await skipValue(source, type); }
@@ -443,11 +450,24 @@
       }
       const modelSizeMB = Math.floor(sizeBytesTotal / 1_000_000);
       const kvq = getKvqBytesPerValue();
-      const kvBytes = kvq * params.hidden_size * params.hidden_layers * contextSize;
+      
+      // GQA Adjustment: Scale by (kv_heads / attention_heads)
+      const gqaRatio = (params.kv_heads && params.attention_heads) ? (params.kv_heads / params.attention_heads) : 1;
+      const kvBytes = kvq * params.hidden_size * params.hidden_layers * contextSize * gqaRatio;
       const kvCacheMB = Math.floor(kvBytes / 1_000_000);
-      const totalRequiredMB = modelSizeMB + kvCacheMB;
-      const displayString = `${formatMemorySize(totalRequiredMB)} (Model: ${formatMemorySize(modelSizeMB)} + KV: ${formatMemorySize(kvCacheMB)} @ ${getKvqLabel()})`;
-      return { modelSizeMB, kvCacheMB, totalRequiredMB, displayString, hasEstimate: true, kvq: getKvqLabel() };
+
+      // Overhead Calculation (Regression from paper: 0.02 GB/B params + 0.15 GB)
+      // If parameter_count is missing, we can't estimate overhead accurately, so we default to a safe baseline or 0.
+      let overheadMB = 0;
+      if (params.parameter_count) {
+        const paramsBillion = Number(params.parameter_count) / 1_000_000_000;
+        const overheadGB = (0.02 * paramsBillion) + 0.15;
+        overheadMB = Math.floor(overheadGB * 1000);
+      }
+
+      const totalRequiredMB = modelSizeMB + kvCacheMB + overheadMB;
+      const displayString = `${formatMemorySize(totalRequiredMB)} (Model: ${formatMemorySize(modelSizeMB)} + KV: ${formatMemorySize(kvCacheMB)} + Overhead: ${formatMemorySize(overheadMB)})`;
+      return { modelSizeMB, kvCacheMB, overheadMB, totalRequiredMB, displayString, hasEstimate: true, kvq: getKvqLabel(), gqaRatio };
     }
 
     async function calculateMemoryUsageFromFile(file, contextSize, { verbose = false } = {}) {
@@ -468,11 +488,23 @@
       }
       const modelSizeMB = Math.floor(totalBytes / 1_000_000);
       const kvq = getKvqBytesPerValue();
-      const kvBytes = kvq * params.hidden_size * params.hidden_layers * contextSize;
+
+      // GQA Adjustment
+      const gqaRatio = (params.kv_heads && params.attention_heads) ? (params.kv_heads / params.attention_heads) : 1;
+      const kvBytes = kvq * params.hidden_size * params.hidden_layers * contextSize * gqaRatio;
       const kvCacheMB = Math.floor(kvBytes / 1_000_000);
-      const totalRequiredMB = modelSizeMB + kvCacheMB;
-      const displayString = `${formatMemorySize(totalRequiredMB)} (Model: ${formatMemorySize(modelSizeMB)} + KV: ${formatMemorySize(kvCacheMB)} @ ${getKvqLabel()})`;
-      return { modelSizeMB, kvCacheMB, totalRequiredMB, displayString, hasEstimate: true, kvq: getKvqLabel() };
+
+      // Overhead Calculation
+      let overheadMB = 0;
+      if (params.parameter_count) {
+        const paramsBillion = Number(params.parameter_count) / 1_000_000_000;
+        const overheadGB = (0.02 * paramsBillion) + 0.15;
+        overheadMB = Math.floor(overheadGB * 1000);
+      }
+
+      const totalRequiredMB = modelSizeMB + kvCacheMB + overheadMB;
+      const displayString = `${formatMemorySize(totalRequiredMB)} (Model: ${formatMemorySize(modelSizeMB)} + KV: ${formatMemorySize(kvCacheMB)} + Overhead: ${formatMemorySize(overheadMB)})`;
+      return { modelSizeMB, kvCacheMB, overheadMB, totalRequiredMB, displayString, hasEstimate: true, kvq: getKvqLabel(), gqaRatio };
     }
 
     // ===== UI wiring =====
@@ -519,6 +551,7 @@
       add('kv_heads', p.kv_heads);
       add('hidden_layers', p.hidden_layers);
       add('hidden_size', p.hidden_size);
+      if (p.parameter_count) add('parameter_count', (Number(p.parameter_count) / 1e9).toFixed(2) + 'B');
       if (p.split_count) add('split_count', p.split_count);
     }
 
@@ -527,9 +560,11 @@
       const add = (k, v) => { const kEl = document.createElement('div'); kEl.textContent = k; const vEl = document.createElement('div'); vEl.textContent = String(v); resultEl.appendChild(kEl); resultEl.appendChild(vEl); };
       add('modelSizeMB', u.modelSizeMB);
       add('kvCacheMB', u.kvCacheMB);
+      add('overheadMB', u.overheadMB);
       add('totalRequiredMB', u.totalRequiredMB);
       add('display', u.displayString);
       if (u.kvq) add('kvQuantization', u.kvq);
+      if (u.gqaRatio && u.gqaRatio !== 1) add('GQA Ratio', u.gqaRatio.toFixed(2));
     }
 
   // Resolve selected context tokens (dropdown or custom numeric input)
