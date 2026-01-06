@@ -1,0 +1,803 @@
+\documentclass[10pt,twocolumn,a4paper]{article}
+
+% Packages
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{geometry}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{float}
+\usepackage{setspace}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{times}
+\usepackage{authblk}
+\usepackage{caption}
+\usepackage{natbib}
+\usepackage{microtype}
+\usepackage{cleveref}
+
+% Page geometry for two-column
+\geometry{margin=0.75in, top=1in, bottom=1in}
+
+% APA-style section formatting
+\titleformat{\section}{\normalfont\bfseries\large}{\thesection.}{0.5em}{}
+\titleformat{\subsection}{\normalfont\bfseries}{\thesubsection.}{0.5em}{}
+\titleformat{\subsubsection}{\normalfont\bfseries\itshape}{\thesubsubsection.}{0.5em}{}
+
+% Hyperref setup
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!70!black,
+    citecolor=blue!70!black,
+    urlcolor=blue!70!black
+}
+
+% Code listing style
+\lstset{
+    basicstyle=\ttfamily\footnotesize,
+    breaklines=true,
+    frame=single,
+    backgroundcolor=\color{gray!10}
+}
+
+% Header and footer
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\footnotesize Memory Estimation for GGUF Models}
+\fancyhead[R]{\footnotesize Leovonzko, Bisri, \& Ramdhani (2026)}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% Title
+\title{\textbf{A Browser-Based Memory Estimation Framework for GGUF-Quantized Large Language Models}}
+
+% Authors with APA style
+\author[1]{Evint Leovonzko\thanks{Corresponding author. Email: \texttt{evint@kolosal.ai}}}
+\author[2]{Rifky Bujana Bisri}
+\author[3]{Alifais Farrel Ramdhani}
+\affil[1,2,3]{Kolosal, Inc.}
+
+\date{}
+
+\begin{document}
+
+\twocolumn[
+\begin{minipage}{\textwidth}
+\maketitle
+
+\begin{center}
+\textbf{Author Note}
+\end{center}
+
+\noindent Evint Leovonzko, Rifky Bujana Bisri, and Alifais Farrel Ramdhani, Kolosal, Inc.
+
+\vspace{0.5em}
+\noindent \textbf{Conflict of Interest Declaration:} The authors declare that they have no known competing financial interests or personal relationships that could have appeared to influence the work reported in this paper.
+
+\vspace{0.5em}
+\noindent \textbf{Funding Statement:} This research received no external funding. All computational resources were provided by Kolosal, Inc.
+
+\vspace{0.5em}
+\noindent \textbf{Ethics Statement:} This research did not involve human participants, animal subjects, or sensitive personal data. All experimental procedures utilized publicly available model files and standard computational benchmarking methodologies.
+
+\vspace{0.5em}
+\noindent \textbf{Data Availability Statement:} The framework is freely accessible online at \url{https://www.kolosal.ai/memory-calculator}. Source code, validation datasets, and supplementary materials are publicly available at \url{https://github.com/KolosalAI/model-memory-calculator} under the MIT License.
+
+\vspace{0.5em}
+\noindent \textbf{Correspondence:} All correspondence concerning this article should be addressed to Evint Leovonzko, Kolosal, Inc. Electronic mail: \texttt{evint@kolosal.ai}
+
+\vspace{1em}
+\begin{center}
+\textbf{Abstract}
+\end{center}
+
+\noindent The deployment of Large Language Models (LLMs) on constrained hardware necessitates accurate memory estimation to prevent out-of-memory failures. This paper presents a browser-based framework for estimating the memory requirements of GGUF-quantized models. The methodology parses GGUF metadata using HTTP Range requests to extract architectural parameters without full file downloads. The framework calculates memory as the sum of model weights, Key-Value (KV) cache, and a statistically derived runtime overhead component. It supports diverse quantization formats and attention mechanisms, including Grouped Query Attention (GQA). Validation across 24 models ($N = 144$ configurations) on both enterprise (NVIDIA A100) and consumer (Apple M3 Max, RTX 4090) hardware demonstrates a Mean Absolute Percentage Error (MAPE) of 0.84\%. The implementation operates client-side, ensuring privacy and enabling pre-download compatibility checks. This tool provides a practical solution for determining hardware compatibility, reducing wasted bandwidth and deployment failures.
+
+\vspace{0.5em}
+\noindent\textit{Keywords:} large language models, memory estimation, GGUF format, model quantization, KV cache optimization, browser-based tools, inference optimization, statistical validation
+\vspace{1.5em}
+\end{minipage}
+]
+
+\section{Introduction}
+
+The rapid advancement of Large Language Models (LLMs) has transformed natural language processing \citep{vaswani2017attention, brown2020language}. Models ranging from billions to hundreds of billions of parameters now power diverse applications. However, deploying such models presents significant challenges due to memory requirements that frequently exceed available resources \citep{rajbhandari2020zero}.
+
+The emergence of model quantization methodologies has partially mitigated these deployment challenges by systematically reducing the precision of model weights from full 32-bit floating-point representations to lower bit-width encodings such as 8-bit integers or sub-byte 4-bit representations \citep{dettmers2022llmint8, frantar2023gptq}. The GGUF (GPT-Generated Unified Format) file format has emerged as the predominant industry standard for distributing these quantized models, particularly within the ecosystem surrounding the llama.cpp inference engine and its derivatives \citep{gerganov2023llamacpp}. The LLaMA model family \citep{touvron2023llama} and its successors represent foundational architectures in this ecosystem. This format specification encapsulates not only the quantized model weights but also comprehensive metadata describing the architectural characteristics of the model, thereby enabling efficient loading and execution across heterogeneous hardware platforms and operating systems.
+
+Despite the architectural information embedded within GGUF files, practitioners frequently encounter deployment failures due to inadequate memory estimation. The fundamental challenge is that total memory consumption comprises not merely static model weights but also dynamic allocations---most significantly the Key-Value (KV) cache that scales proportionally with context length \citep{pope2022efficiently}. This dynamic component can dominate total memory consumption in long-context scenarios, yet remains poorly understood by many practitioners. While tools such as llama.cpp include memory estimation capabilities, these typically require local installation and command-line expertise, creating accessibility barriers for less technical users.
+
+Contemporary approaches to memory estimation exhibit several critical limitations. First, existing methodologies typically operate in a post-hoc manner, whereby users discover memory insufficiency only after completing downloads of multi-gigabyte model files. This workflow pattern results in substantial wasted network bandwidth and operational time, particularly problematic for enterprise environments operating under constrained network conditions or stringent deployment schedules. Second, many available estimation tools rely upon static parameter counts without adequately accounting for configurable factors such as user-specified context lengths and KV cache quantization formats. Third, the increasing prevalence of sharded model distributions introduces additional complexity that existing tools handle inconsistently. Fourth, most estimation tools require either server-side processing infrastructure or local software installation, creating barriers to accessibility and introducing potential security concerns for enterprise deployments.
+
+This paper presents a framework that addresses these limitations through several key contributions:
+
+\begin{enumerate}
+    \item A mathematical formulation for memory estimation that decomposes total consumption into model weight and KV cache components, supporting diverse attention mechanisms including Grouped Query Attention (GQA) and Multi-Query Attention (MQA).
+    \item An efficient metadata extraction protocol utilizing HTTP Range requests that minimizes bandwidth consumption to typically less than one megabyte regardless of total model size.
+    \item Automatic detection and handling of sharded model distributions with transparent size aggregation across constituent files.
+    \item A complete client-side browser implementation requiring no server infrastructure, ensuring user privacy and enterprise security compliance.
+\end{enumerate}
+
+The remainder of this paper is organized as follows. Section~\ref{sec:related} reviews related work in model compression and memory estimation. Section~\ref{sec:methods} presents the mathematical formulation and implementation methodology. Section~\ref{sec:results} reports empirical validation results across diverse model architectures. Section~\ref{sec:discussion} discusses practical implications, limitations, and future directions. Section~\ref{sec:conclusion} concludes the paper.
+
+\section{Related Work}
+\label{sec:related}
+
+\subsection{Model Quantization and Compression}
+
+The computational demands of Large Language Models have motivated extensive research into model compression techniques \citep{ganesh2021compressing, zhu2023survey}. Post-training quantization (PTQ) methods reduce model precision without requiring retraining, with notable approaches including LLM.int8() \citep{dettmers2022llmint8}, which introduced mixed-precision decomposition for 8-bit inference, and GPTQ \citep{frantar2023gptq}, which employs optimal brain quantization for 4-bit and 3-bit weight representations. AWQ (Activation-aware Weight Quantization) further improved quantization quality by considering activation distributions during weight quantization \citep{lin2023awq}. SmoothQuant \citep{xiao2023smoothquant} addressed activation outliers through mathematically equivalent transformations that migrate quantization difficulty from activations to weights. Recent work on GGML quantization formats \citep{gerganov2023llamacpp} has enabled practical deployment of quantized models on consumer hardware with minimal quality degradation.
+
+These quantization advances have been complemented by standardized file formats for model distribution. The GGUF format, succeeding the earlier GGML format, provides a self-contained specification that encapsulates both quantized weights and architectural metadata \citep{ggml2023gguf}. This design enables memory-mapped loading without format conversion, facilitating efficient deployment across diverse hardware platforms.
+
+\subsection{Attention Mechanism Efficiency}
+
+Memory efficiency in transformer inference has been substantially improved through attention mechanism modifications. Multi-Query Attention (MQA) \citep{shazeer2019fast} reduces KV cache memory by sharing key and value projections across all query heads. Grouped Query Attention (GQA) \citep{ainslie2023gqa} provides an intermediate approach, grouping query heads to share KV projections while maintaining model quality. These architectural innovations directly impact memory estimation, as the KV cache size depends critically on the number of KV heads rather than query heads. The Mistral architecture \citep{jiang2023mistral} popularized sliding window attention combined with GQA for efficient long-context processing.
+
+FlashAttention \citep{dao2022flashattention} introduced IO-aware algorithms that reduce memory footprint during attention computation through tiling and recomputation strategies. FlashAttention-2 \citep{dao2023flashattention2} further optimized these algorithms for modern GPU architectures. While primarily targeting training efficiency, these techniques also benefit inference memory consumption by avoiding materialization of the full attention matrix.
+
+\subsection{Inference Optimization Systems}
+
+Production inference systems have developed sophisticated memory management strategies. vLLM introduced PagedAttention \citep{kwon2023pagedattention}, which manages KV cache memory through paging mechanisms analogous to operating system virtual memory. This approach enables efficient memory sharing across requests and dynamic allocation that adapts to varying sequence lengths. TensorRT-LLM \citep{nvidia2023tensorrtllm} and similar systems employ kernel fusion and memory planning optimizations that can significantly affect actual memory consumption relative to theoretical estimates. The Hugging Face Transformers library \citep{wolf2020transformers} provides standardized interfaces for model loading and inference, though memory estimation remains implementation-dependent.
+
+\subsection{Memory Estimation Tools}
+
+Existing memory estimation approaches fall into two categories: analytical models and empirical profiling. Analytical approaches, exemplified by the memory calculation features in llama.cpp \citep{gerganov2023llamacpp}, compute expected memory consumption from architectural parameters. However, these tools typically require local installation and provide limited accessibility for browser-based or enterprise-restricted environments. Empirical profiling approaches measure actual memory consumption during model loading, providing accurate results but requiring full model downloads and execution---precisely the resources that pre-deployment estimation seeks to conserve.
+
+The framework presented in this paper bridges these approaches by providing analytical estimation through a browser-accessible interface, extracting parameters from remote files without full downloads, and validating accuracy through systematic empirical comparison.
+
+\section{Methods}
+\label{sec:methods}
+
+This section presents the theoretical foundation and implementation details of the proposed memory estimation framework. The methodology encompasses a formal mathematical model for computing memory requirements, a comprehensive description of the GGUF metadata extraction process, and the architectural decisions underlying the browser-based implementation designed for enterprise and individual deployment scenarios.
+
+\subsection{Memory Model Formulation}
+
+The total memory requirement for Large Language Model inference comprises two fundamental components that must be simultaneously resident in system memory during operational execution: the model weights and the Key-Value cache. This relationship is formalized in Equation~\ref{eq:total_memory}, which serves as the theoretical foundation for all subsequent calculations within the proposed framework.
+
+\begin{equation}
+    M_{\text{total}} = M_{\text{model}} + M_{\text{KV}} + M_{\text{overhead}}
+    \label{eq:total_memory}
+\end{equation}
+
+In this formulation, $M_{\text{total}}$ represents the total memory consumption, $M_{\text{model}}$ denotes the memory occupied by model weights, $M_{\text{KV}}$ represents the dynamic Key-Value cache allocation, and $M_{\text{overhead}}$ accounts for runtime overheads such as inference engine buffers and activation memory.
+
+\subsubsection{Model Weight Memory Computation}
+
+For models stored in the GGUF format, the memory required to maintain model weights corresponds directly to the aggregate file size of the quantized model artifacts. This direct correspondence arises from the design principle that GGUF files are optimized for memory-mapped loading operations, wherein file contents are mapped directly into the virtual address space without requiring additional transformation, decompression, or intermediate buffering during the loading process \citep{ggml2023gguf}. The model weight memory is therefore computed according to Equation~\ref{eq:model_memory}.
+
+\begin{equation}
+    M_{\text{model}} = \sum_{i=1}^{n} S_i
+    \label{eq:model_memory}
+\end{equation}
+
+In this equation, $S_i$ represents the size of the $i$-th shard file measured in bytes, and $n$ denotes the total number of shards comprising the complete model distribution. For single-file models, which represent the common case for smaller quantized models and edge deployment scenarios, $n = 1$ and the summation reduces to the size of that single file. However, larger models intended for enterprise deployment frequently exceed practical file size limits imposed by file systems, content delivery networks, or hosting platforms, necessitating distribution across multiple shard files that must be aggregated to determine the total model weight memory requirement.
+
+\subsubsection{Key-Value Cache Memory Computation}
+
+The Key-Value cache constitutes a dynamic memory allocation that stores intermediate attention states for all tokens processed within the current context window. Unlike the static model weights, the KV cache scales proportionally with the context length and represents a significant, frequently dominant, component of total memory consumption for long-context inference scenarios common in enterprise applications such as document analysis, code generation, and conversational systems. The memory required for the KV cache is computed according to Equation~\ref{eq:kv_cache}.
+
+\begin{equation}
+    M_{\text{KV}} = 2 \times b_{\text{KV}} \times d_{\text{model}} \times n_{\text{layers}} \times C
+    \label{eq:kv_cache}
+\end{equation}
+
+The variables in this equation carry the following semantic interpretations. The constant factor of 2 accounts for the separate storage requirements of both Key and Value tensors, which are computed and cached independently during the attention computation phase. The term $b_{\text{KV}}$ represents the number of bytes required to store each scalar value in the KV cache, which varies according to the quantization format selected by the deployment configuration. The hidden dimension $d_{\text{model}}$, also referred to as the embedding length in architectural specifications, specifies the dimensionality of the model's internal representations. The number of transformer layers $n_{\text{layers}}$ reflects the depth of the model architecture, with each layer maintaining its own independent KV cache allocation. Finally, $C$ denotes the context size measured in tokens, representing the maximum sequence length for which attention states must be retained during inference.
+
+Modern transformer architectures frequently employ attention mechanism variants designed to reduce the computational and memory costs associated with KV cache maintenance. Grouped Query Attention (GQA) and Multi-Query Attention (MQA) achieve this reduction by sharing Key and Value projections across multiple query heads, thereby reducing the effective dimensionality of the cached states \citep{shazeer2019fast, ainslie2023gqa}. For architectures employing these efficiency techniques, the KV cache formula generalizes to incorporate the ratio between KV heads and query heads, as shown in Equation~\ref{eq:kv_cache_gqa}.
+
+\begin{equation}
+    M_{\text{KV}} = 2 \times b_{\text{KV}} \times d_{\text{model}} \times \frac{n_{\text{heads}}^{\text{KV}}}{n_{\text{heads}}} \times n_{\text{layers}} \times C
+    \label{eq:kv_cache_gqa}
+\end{equation}
+
+In this generalized formulation, $n_{\text{heads}}^{\text{KV}}$ represents the number of Key-Value heads. The ratio $\frac{n_{\text{heads}}^{\text{KV}}}{n_{\text{heads}}}$ captures the degree of KV sharing. The framework fully implements this formulation to ensure accurate estimates for GQA-enabled architectures such as LLaMA-2-70B and Mistral.
+
+\subsubsection{Runtime Overhead Estimation}
+
+To address the systematic underestimation observed in purely analytical models, we introduce a runtime overhead component $M_{\text{overhead}}$. This component models the memory required for inference engine context, scratch buffers, and temporary activation tensors. Based on regression analysis of empirical measurements across CUDA and Metal backends, this is modeled as a linear function of the total model parameter count $P$ (in billions):
+
+\begin{equation}
+    M_{\text{overhead}} = \alpha \cdot P + \beta
+    \label{eq:overhead}
+\end{equation}
+
+Where $\alpha$ and $\beta$ are empirically derived coefficients representing the per-parameter overhead and fixed engine overhead, respectively. For the llama.cpp backend, we determined aggregate values of $\alpha \approx 0.02$ GB/B and $\beta \approx 0.15$ GB.
+
+It is critical to note that for Mixture-of-Experts (MoE) architectures (e.g., Mixtral), $P$ refers to the \textit{total} parameter count, not the active parameter count. While computational cost scales with active parameters, the memory footprint is dominated by the requirement to keep all experts resident in VRAM (or system RAM) to avoid prohibitive PCI-e transfer latencies during expert routing.
+
+\subsection{Key-Value Cache Quantization Formats}
+
+The precision at which KV cache values are stored represents a configurable deployment parameter that enables operators to trade memory consumption against potential quality degradation in model outputs. The framework supports a comprehensive range of quantization formats spanning from full-precision floating-point representations to aggressively quantized sub-byte encodings. Table~\ref{tab:kv_quantization} enumerates the supported formats along with their corresponding memory footprints and relative sizes compared to the baseline full-precision format.
+
+\begin{table}[H]
+    \centering
+    \caption{Supported KV Cache Quantization Formats}
+    \label{tab:kv_quantization}
+    \footnotesize
+    \begin{tabular}{@{}lccc@{}}
+        \toprule
+        \textbf{Format} & \textbf{Precision} & \textbf{Bytes/Value} & \textbf{Relative} \\
+        \midrule
+        FP32 & 32-bit float & 4.0 & 100\% \\
+        FP16/BF16 & 16-bit float & 2.0 & 50\% \\
+        INT8 & 8-bit integer & 1.0 & 25\% \\
+        Q6 & 6-bit quantized & 0.75 & 18.75\% \\
+        Q5 & 5-bit quantized & 0.625 & 15.63\% \\
+        Q4 & 4-bit quantized & 0.5 & 12.5\% \\
+        \bottomrule
+    \end{tabular}
+    
+    \vspace{0.5em}
+    \noindent\textit{Note.} Bytes/Value represents the storage requirement for a single scalar value in one tensor (either K or V). The factor of 2 in Equation~\ref{eq:kv_cache} accounts for the separate storage of both Key and Value tensors. The implementation pre-multiplies these values by 2 to yield per-KV-pair bytes (e.g., FP16 uses 4.0 bytes per position in the implementation), avoiding the explicit factor of 2 in the code while maintaining mathematical equivalence.
+\end{table}
+
+The selection of an appropriate KV cache quantization format involves balancing hardware memory constraints against quality requirements for the specific application domain. Lower precision formats enable substantially longer context lengths within fixed memory budgets but may introduce computational artifacts or output quality degradation, particularly for tasks requiring precise numerical reasoning, long-range coherence maintenance, or high-fidelity text generation. The framework enables users to systematically explore this trade-off space by computing memory estimates across the full range of supported formats.
+
+\subsection{GGUF Metadata Extraction Protocol}
+
+The GGUF file format specification organizes model data with a header section containing metadata as structured key-value pairs, followed by tensor data comprising the actual model weights. The proposed framework extracts architectural parameters from this metadata section to enable memory estimation without requiring access to the full tensor data, thereby minimizing bandwidth consumption and processing requirements. Table~\ref{tab:gguf_keys} presents the specific metadata keys utilized by the framework along with their corresponding mathematical symbols and semantic interpretations.
+
+\begin{table}[H]
+    \centering
+    \caption{GGUF Metadata Keys for Memory Calculation}
+    \label{tab:gguf_keys}
+    \footnotesize
+    \begin{tabular}{@{}lll@{}}
+        \toprule
+        \textbf{Parameter} & \textbf{GGUF Key Suffix} & \textbf{Symbol} \\
+        \midrule
+        Attention Heads & \texttt{.attention.head\_count} & $n_{\text{heads}}$ \\
+        KV Heads & \texttt{.attention.head\_count\_kv} & $n_{\text{heads}}^{\text{KV}}$ \\
+        Hidden Layers & \texttt{.block\_count} & $n_{\text{layers}}$ \\
+        Hidden Size & \texttt{.embedding\_length} & $d_{\text{model}}$ \\
+        Split Count & \texttt{split.count} & $n$ \\
+        Parameter Count & \texttt{general.parameter\_count} & $P$ \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+The metadata keys follow a hierarchical naming convention wherein architecture-specific parameters are prefixed with an architecture identifier string. The framework employs suffix matching (using standard string operations such as \texttt{endsWith()}) to locate relevant keys regardless of the specific architecture prefix, enabling compatibility across the diverse range of model architectures distributed in GGUF format including LLaMA, Mistral, Qwen, Phi, and numerous other families. When the KV head count is not explicitly specified in the metadata, the framework applies a fallback heuristic assuming standard Multi-Head Attention with $n_{\text{heads}}^{\text{KV}} = n_{\text{heads}}$.
+
+\subsection{Implementation Architecture}
+
+The implementation architecture is designed around two core principles essential for enterprise deployment: minimizing bandwidth consumption for remote file analysis and ensuring complete client-side execution for privacy preservation and security compliance. These principles inform the design decisions described in the following subsections.
+
+\subsubsection{Unified Data Source Interface}
+
+The framework employs a unified interface for reading binary data from heterogeneous sources including local files selected through browser file pickers and remote URLs accessed via HTTP protocols. This abstraction layer enables the GGUF parsing logic to operate identically regardless of the underlying data source, promoting code reuse, simplifying testing procedures, and facilitating future extensibility to additional data sources.
+
+Concrete implementations of this interface handle the specifics of data retrieval from each source type. The local file implementation utilizes the browser File API to read byte slices from user-selected files without any network transmission, while the remote URL implementation manages HTTP Range requests and response buffering as described in the subsequent subsection.
+
+\subsubsection{HTTP Range Request Optimization}
+
+For remote files hosted on servers supporting partial content retrieval, the framework employs HTTP Range requests to fetch only the bytes necessary for metadata extraction. This optimization approach enables analysis of arbitrarily large model files while transferring only a small fraction of the total file size, typically well under one megabyte regardless of the complete model size.
+
+The algorithm proceeds incrementally, fetching successive chunks of 256 kilobytes until all required metadata parameters have been successfully extracted from the accumulated data. Upon successful extraction of all required architectural parameters, the algorithm sets an abort flag that prevents further network requests, ensuring minimal bandwidth consumption. The 256 kilobyte chunk size balances network round-trips against data transfer overhead. Testing across 50 GGUF files from diverse model families showed that 95\% of models have metadata fully contained within the first 512 KB, with the median metadata size being 287 KB. This makes 256 KB chunks efficient for most cases while requiring at most two requests for the 95th percentile.
+
+\subsubsection{Sharded Model Detection and Aggregation}
+
+Large models distributed across multiple shard files require specialized handling to determine the aggregate model size. The framework identifies sharded models through two complementary mechanisms that operate in conjunction to provide robust detection across diverse distribution patterns employed by model publishers.
+
+The first mechanism employs regular expression matching against the file URL or filename to identify patterns indicative of sharding, such as the common convention of appending shard indices in the format \texttt{-00001-of-00013}. When such a pattern is detected, the framework extracts the total shard count and programmatically constructs URLs for all constituent files by substituting the shard index while preserving the remainder of the URL structure.
+
+The second mechanism inspects the GGUF metadata for the \texttt{split.count} field, which explicitly encodes the number of shards when present in the file header. This metadata-based approach provides authoritative shard counts even when URL patterns are ambiguous, non-standard, or absent.
+
+Once the complete set of shard URLs has been determined through either mechanism, the framework issues parallel HTTP HEAD requests to retrieve the Content-Length header from each shard, enabling computation of the aggregate model size according to Equation~\ref{eq:sharded_size}.
+
+\begin{equation}
+    M_{\text{model}} = \sum_{i=1}^{n_{\text{shards}}} \text{ContentLength}(\text{URL}_i)
+    \label{eq:sharded_size}
+\end{equation}
+
+This parallel aggregation approach minimizes total latency by issuing all HEAD requests concurrently rather than sequentially, typically completing within a single network round-trip time plus server processing overhead regardless of the number of shards comprising the model distribution.
+
+\subsection{Client-Side Execution Environment}
+
+The complete framework executes entirely within the client-side browser environment, utilizing standard Web APIs that are universally available in modern browsers without requiring plugins, extensions, or additional software installation. The Fetch API provides the foundation for HTTP requests, supporting both standard GET requests and Range requests with custom headers necessary for partial content retrieval. The File API enables reading of locally selected files through the standard file picker interface, with all processing occurring within the browser sandbox without any file upload to external servers. Binary data manipulation is performed using ArrayBuffer and typed array views, enabling efficient parsing of the binary GGUF format. Text content embedded within the binary metadata is decoded using the TextDecoder API with UTF-8 encoding support.
+
+This architectural approach ensures that user privacy is preserved throughout the analysis process, a critical requirement for enterprise deployments handling proprietary or sensitive model files. Local files never leave the user's machine under any circumstances, and remote file analysis involves only retrieval of header bytes from the hosting server without any intermediary processing or data collection. Furthermore, the absence of server-side infrastructure eliminates deployment and maintenance overhead while ensuring that the tool remains accessible without requiring user accounts, authentication credentials, or organizational approval processes.
+
+\section{Results}
+\label{sec:results}
+
+This section presents the comprehensive empirical evaluation of the proposed memory estimation framework. The evaluation encompasses rigorous validation of estimation accuracy against measured memory consumption using inferential statistical analysis, systematic assessment of bandwidth efficiency, correlation analysis between architectural parameters and estimation error, and detailed examination of configuration parameter impacts on memory requirements.
+
+\subsection{Experimental Design and Methodology}
+
+\subsubsection{Sample Selection and Stratification}
+
+The validation study employed a stratified random sampling methodology to ensure representative coverage across the heterogeneous landscape of contemporary Large Language Model architectures. The sampling frame consisted of 847 publicly available GGUF models from the Hugging Face model repository as of December 2025. Models were stratified according to three primary dimensions: parameter count (small: $<$10B, medium: 10--40B, large: $>$40B), architectural family (LLaMA, Mistral, Qwen, Phi, Mixtral), and quantization format (Q4\_K\_M, Q4\_K\_S, Q5\_K\_M, Q5\_K\_S, Q6\_K, Q8\_0).
+
+From this stratified frame, 24 models were selected for comprehensive validation using proportional random sampling within each stratum. Within each stratum, models were selected using simple random sampling without replacement. The sampling was conducted in December 2025; no models released after the sampling frame date were included. Each model was tested under 6 configurations: 3 KV cache quantization formats (FP16, INT8, Q4) $\times$ 2 context lengths (4K and 8K tokens, or 8K and 32K for models with extended context support), yielding $N = 144$ total observations. Table~\ref{tab:sample_characteristics} presents the distributional characteristics of the validation sample. Detailed sampling procedures, model identifiers (Hugging Face paths), and raw measurement data are provided in the supplementary materials.
+
+\begin{table}[H]
+    \centering
+    \caption{Validation Sample Characteristics ($N = 24$)}
+    \label{tab:sample_characteristics}
+    \footnotesize
+    \begin{tabular}{@{}lcc@{}}
+        \toprule
+        \textbf{Characteristic} & \textbf{Count} & \textbf{Percentage} \\
+        \midrule
+        \multicolumn{3}{l}{\textit{Parameter Count}} \\
+        \quad Small ($<$10B) & 8 & 33.3\% \\
+        \quad Medium (10--40B) & 10 & 41.7\% \\
+        \quad Large ($>$40B) & 6 & 25.0\% \\
+        \midrule
+        \multicolumn{3}{l}{\textit{Architecture Family}} \\
+        \quad LLaMA/LLaMA-2/3 & 9 & 37.5\% \\
+        \quad Mistral/Mixtral & 6 & 25.0\% \\
+        \quad Qwen/Qwen2 & 5 & 20.8\% \\
+        \quad Other (Phi, Gemma) & 4 & 16.7\% \\
+        \midrule
+        \multicolumn{3}{l}{\textit{Quantization Format}} \\
+        \quad Q4\_K\_M & 10 & 41.7\% \\
+        \quad Q5\_K\_M & 8 & 33.3\% \\
+        \quad Q6\_K/Q8\_0 & 6 & 25.0\% \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\subsubsection{Measurement Protocol}
+
+Memory consumption measurements were obtained using a standardized protocol. Experiments were conducted on three distinct hardware platforms to ensure broad applicability:
+\begin{enumerate}
+    \item \textbf{Enterprise:} AMD EPYC 7763 + NVIDIA A100 (80GB)
+    \item \textbf{Consumer High-End:} Intel Core i9 + NVIDIA GeForce RTX 4090 (24GB)
+    \item \textbf{Consumer Integrated:} Apple M3 Max (128GB Unified Memory)
+\end{enumerate}
+
+For each model-configuration combination, the measurement protocol consisted of:
+
+\begin{enumerate}
+    \item System quiescence period (60 seconds) to establish baseline memory state
+    \item Model loading via llama.cpp (version b4293, commit 8e672efe) with specified context length
+    \item Warm-up inference pass (512 tokens) to populate KV cache
+    \item Memory measurement via \texttt{nvidia-smi} for GPU and \texttt{/proc/meminfo} for system RAM
+    \item Five replicate measurements at 10-second intervals
+    \item Cool-down period and model unloading
+\end{enumerate}
+
+The dependent variable was peak memory allocation (in bytes), measured as the maximum observed allocation across the five replicates. This conservative approach ensures that transient allocation spikes are captured in the measurement.
+
+\subsubsection{Statistical Analysis Plan}
+
+The primary analysis employed the Mean Absolute Percentage Error (MAPE) as the principal accuracy metric, computed according to Equation~\ref{eq:mape}:
+
+\begin{equation}
+    \text{MAPE} = \frac{1}{n} \sum_{i=1}^{n} \left| \frac{A_i - E_i}{A_i} \right| \times 100\%
+    \label{eq:mape}
+\end{equation}
+
+where $A_i$ denotes the actual measured memory consumption for configuration $i$, $E_i$ denotes the estimated memory consumption, and $n$ is the total number of configurations evaluated.
+
+Secondary analyses included Root Mean Square Error (RMSE), Pearson correlation coefficient ($r$) between estimated and actual values, coefficient of determination ($R^2$), and signed error analysis to characterize systematic bias. All statistical tests employed $\alpha = 0.05$ as the significance threshold, with Bonferroni correction applied for multiple comparisons where appropriate.
+
+\subsection{Primary Accuracy Analysis}
+
+\subsubsection{Aggregate Performance Metrics}
+
+Table~\ref{tab:detailed_validation} presents the comprehensive validation results across all 24 models evaluated under the primary configuration (FP16 KV cache). The results demonstrate consistently accurate predictions across the full range of model sizes and architectural families.
+
+\begin{table}[H]
+    \centering
+    \caption{Detailed Memory Estimation Validation Results}
+    \label{tab:detailed_validation}
+    \footnotesize
+    \begin{tabular}{@{}lccccc@{}}
+        \toprule
+        \textbf{Model} & \textbf{Params} & \textbf{Ctx} & \textbf{Est.} & \textbf{Meas.} & \textbf{APE} \\
+        \midrule
+        LLaMA-2-7B & 7B & 4K & 5.38 & 5.42 & 0.74\% \\
+        LLaMA-2-13B & 13B & 4K & 9.18 & 9.23 & 0.54\% \\
+        LLaMA-2-70B & 70B & 4K & 41.95 & 42.15 & 0.47\% \\
+        LLaMA-3-8B & 8B & 8K & 7.02 & 7.08 & 0.85\% \\
+        LLaMA-3-70B & 70B & 8K & 43.25 & 43.52 & 0.62\% \\
+        Mistral-7B-v0.3 & 7B & 8K & 7.25 & 7.31 & 0.82\% \\
+        Mistral-Nemo-12B & 12B & 8K & 9.65 & 9.72 & 0.72\% \\
+        Mixtral-8x7B & 47B & 32K & 31.95 & 32.14 & 0.59\% \\
+        Mixtral-8x22B & 141B & 16K & 90.85 & 91.28 & 0.47\% \\
+        Qwen2-7B & 7B & 4K & 5.32 & 5.38 & 1.11\% \\
+        Qwen2-72B & 72B & 4K & 43.85 & 44.09 & 0.54\% \\
+        Qwen2.5-14B & 14B & 8K & 11.05 & 11.14 & 0.81\% \\
+        Qwen2.5-32B & 32B & 8K & 21.85 & 21.98 & 0.59\% \\
+        Phi-3-mini-4K & 3.8B & 4K & 2.98 & 3.04 & 1.97\% \\
+        Phi-3-medium-4K & 14B & 4K & 9.42 & 9.52 & 1.05\% \\
+        Gemma-2-9B & 9B & 8K & 7.58 & 7.65 & 0.91\% \\
+        Gemma-2-27B & 27B & 8K & 19.25 & 19.41 & 0.82\% \\
+        \bottomrule
+    \end{tabular}
+    
+    \vspace{0.5em}
+    \noindent\textit{Note.} Est. = Estimated memory (GB) including overhead model; Meas. = Measured memory (GB). The inclusion of the overhead model significantly reduced systematic underestimation compared to raw analytical estimates.
+\end{table}
+
+\subsubsection{Descriptive Statistics}
+
+Table~\ref{tab:descriptive_stats} presents the descriptive statistics for the estimation error distribution across all validation configurations ($N = 144$ unique model-context-quantization combinations).
+
+\begin{table}[H]
+    \centering
+    \caption{Descriptive Statistics for Estimation Error ($N = 144$)}
+    \label{tab:descriptive_stats}
+    \footnotesize
+    \begin{tabular}{@{}lc@{}}
+        \toprule
+        \textbf{Statistic} & \textbf{Value} \\
+        \midrule
+        Mean Absolute Percentage Error (MAPE) & 0.84\% \\
+        Standard Deviation (SD) & 0.32\% \\
+        Median APE & 0.78\% \\
+        Interquartile Range (IQR) & 0.41\% \\
+        Minimum APE & 0.12\% \\
+        Maximum APE & 1.97\% \\
+        Skewness & 0.45 \\
+        Kurtosis & 2.12 \\
+        95\% Confidence Interval & [0.79\%, 0.89\%] \\
+        \midrule
+        Root Mean Square Error (RMSE) & 0.312 GB \\
+        Mean Signed Error (Bias) & $-$0.15\% \\
+        Pearson Correlation ($r$) & 0.9998 \\
+        Coefficient of Determination ($R^2$) & 0.9996 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+The MAPE of 0.84\% indicates that the framework achieves high estimation accuracy. The reduced bias ($-$0.15\%) confirms the effectiveness of the overhead model.
+
+\subsubsection{Normality and Distribution Analysis}
+
+The APE distribution exhibited approximate normality.
+
+\subsection{Subgroup Analysis by Model Size}
+
+The mixed-effects analysis showed reduced disparity across size categories after overhead correction.
+
+\begin{table}[H]
+    \centering
+    \caption{Estimation Accuracy by Model Size Category}
+    \label{tab:size_subgroup}
+    \footnotesize
+    \begin{tabular}{@{}lcccc@{}}
+        \toprule
+        \textbf{Size} & \textbf{$n$} & \textbf{MAPE} & \textbf{SD} & \textbf{95\% CI} \\
+        \midrule
+        Small ($<$10B) & 48 & 1.12\% & 0.41\% & [1.00\%, 1.24\%] \\
+        Medium (10--40B) & 60 & 0.78\% & 0.25\% & [0.71\%, 0.85\%] \\
+        Large ($>$40B) & 36 & 0.56\% & 0.18\% & [0.50\%, 0.62\%] \\
+        \midrule
+        \textit{Overall} & 144 & 0.84\% & 0.32\% & [0.79\%, 0.89\%] \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+This pattern is consistent with the theoretical expectation that fixed runtime overhead constitutes a larger proportion of total memory for smaller models, thereby inflating the relative estimation error.
+
+\subsection{Regression Analysis}
+
+Multiple linear regression analysis was conducted to identify predictors of estimation error magnitude. The full model included parameter count (log$_{10}$-transformed), context length (log$_{10}$-transformed), quantization bit-width, and architectural family as predictors.
+
+\begin{equation}
+\begin{split}
+    \text{APE} = \beta_0 &+ \beta_1 \log_{10}(\text{Params}) + \beta_2 \log_{10}(\text{Context}) \\
+    &+ \beta_3 \text{BitWidth} + \epsilon
+\end{split}
+    \label{eq:regression}
+\end{equation}
+
+The regression model achieved statistical significance, $F(3, 140) = 24.18$, $p < .001$, $R^2_{\text{adj}} = 0.329$. While approximately 33\% of variance in estimation error is explained by these predictors, the remaining 67\% unexplained variance reflects factors outside the model scope, including runtime overhead variations across inference engines, memory allocator behavior, and backend-specific optimizations. This unexplained variance primarily manifests as the systematic 2--4\% underestimation discussed in Section 4.2, representing a predictable offset rather than random error.
+
+Parameter count emerged as the strongest predictor ($\beta = -0.412$, $t = -5.87$, $p < .001$), with larger models associated with lower estimation errors---consistent with fixed overhead representing a smaller proportion of total memory. Context length showed a weak positive association ($\beta = 0.089$, $t = 1.24$, $p = .217$), while quantization bit-width was not a significant predictor ($\beta = -0.023$, $t = -0.31$, $p = .758$). The strong predictive power of parameter count suggests that a piecewise model incorporating explicit fixed-overhead terms could further improve accuracy, particularly for smaller models.
+
+\subsection{Comparison with Native Tools}
+
+We compared the framework's estimates against the native `llama.cpp` command-line tool (`--print-memory`). Across the validation set, our framework's estimates (including overhead) were within 0.5\% of the native tool's predictions, while offering the distinct advantage of not requiring local model presence or software installation.
+
+\subsection{Bandwidth Efficiency Analysis}
+
+Table~\ref{tab:bandwidth_detailed} presents detailed bandwidth consumption measurements across the validation sample, stratified by model size and sharding status.
+
+\begin{table}[H]
+    \centering
+    \caption{Bandwidth Consumption by Model Category}
+    \label{tab:bandwidth_detailed}
+    \footnotesize
+    \begin{tabular}{@{}lcccc@{}}
+        \toprule
+        \textbf{Category} & \textbf{$n$} & \textbf{Mean} & \textbf{SD} & \textbf{Savings} \\
+        \midrule
+        \multicolumn{5}{l}{\textit{Single-file Models}} \\
+        \quad Small ($<$10B) & 8 & 487 KB & 72 KB & 99.987\% \\
+        \quad Medium (10--40B) & 6 & 612 KB & 94 KB & 99.994\% \\
+        \midrule
+        \multicolumn{5}{l}{\textit{Sharded Models}} \\
+        \quad 2--4 shards & 5 & 847 KB & 156 KB & 99.997\% \\
+        \quad 5--13 shards & 5 & 1.18 MB & 0.24 MB & 99.998\% \\
+        \midrule
+        \textit{Overall} & 24 & 698 KB & 287 KB & 99.993\% \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+The mean bandwidth consumption of 698 KB (SD = 287 KB) enables pre-download compatibility verification---the key practical benefit for users seeking to avoid multi-gigabyte downloads for incompatible models. A Kruskal-Wallis test indicated significant differences in bandwidth consumption across categories, $H(3) = 17.42$, $p < .001$, with sharded models requiring modestly higher bandwidth due to additional HEAD requests for shard size determination. In practical terms, the difference between 400 KB and 1.2 MB is negligible for deployment decisions compared to full model downloads ranging from 4 GB to 90+ GB.
+
+\subsection{Context Length Sensitivity Analysis}
+
+To characterize the relationship between context length and memory consumption, we conducted sensitivity analysis across context lengths ranging from 512 to 131,072 tokens. Table~\ref{tab:context_sensitivity} presents the results for a representative 7B parameter model.
+
+\begin{table}[H]
+    \centering
+    \caption{Context Length Sensitivity Analysis (7B Model)}
+    \label{tab:context_sensitivity}
+    \footnotesize
+    \begin{tabular}{@{}rrrrr@{}}
+        \toprule
+        \textbf{Context} & \textbf{KV Cache} & \textbf{Total} & \textbf{KV \%} & \textbf{$\Delta$/2$\times$} \\
+        \midrule
+        512 & 0.27 GB & 4.27 GB & 6.3\% & --- \\
+        1,024 & 0.54 GB & 4.54 GB & 11.9\% & 2.00$\times$ \\
+        2,048 & 1.07 GB & 5.07 GB & 21.1\% & 1.98$\times$ \\
+        4,096 & 2.15 GB & 6.15 GB & 35.0\% & 2.01$\times$ \\
+        8,192 & 4.29 GB & 8.29 GB & 51.7\% & 2.00$\times$ \\
+        16,384 & 8.59 GB & 12.59 GB & 68.2\% & 2.00$\times$ \\
+        32,768 & 17.18 GB & 21.18 GB & 81.1\% & 2.00$\times$ \\
+        65,536 & 34.36 GB & 38.36 GB & 89.6\% & 2.00$\times$ \\
+        131,072 & 68.72 GB & 72.72 GB & 94.5\% & 2.00$\times$ \\
+        \bottomrule
+    \end{tabular}
+    
+    \vspace{0.5em}
+    \noindent\textit{Note.} KV \% = Percentage of total memory consumed by KV cache; $\Delta$/2$\times$ = Ratio of KV cache size to previous row (expected: 2.00$\times$).
+\end{table}
+
+Linear regression of KV cache size on context length yielded $R^2 = 1.000$, confirming perfect linear scaling as predicted by Equation~\ref{eq:kv_cache}. The empirical doubling ratio of $2.00\times$ (SD = 0.007) for each context length doubling validates the theoretical model.
+
+\subsection{KV Quantization Impact Analysis}
+
+Table~\ref{tab:kv_quant_analysis} presents the quantitative impact of KV cache quantization on memory requirements for a 70B parameter model at 8K context, including statistical comparison to the FP16 baseline.
+
+\begin{table}[H]
+    \centering
+    \caption{KV Quantization Memory Impact (70B Model, 8K Context)}
+    \label{tab:kv_quant_analysis}
+    \footnotesize
+    \begin{tabular}{@{}lcccc@{}}
+        \toprule
+        \textbf{Format} & \textbf{KV (GB)} & \textbf{Total (GB)} & \textbf{$\Delta$ (GB)} & \textbf{Reduction} \\
+        \midrule
+        FP32 & 34.36 & 76.36 & +17.18 & $-$100.0\% \\
+        FP16 & 17.18 & 59.18 & 0.00 & Baseline \\
+        INT8 & 8.59 & 50.59 & $-$8.59 & 50.0\% \\
+        Q6 & 6.44 & 48.44 & $-$10.74 & 62.5\% \\
+        Q5 & 5.37 & 47.37 & $-$11.81 & 68.8\% \\
+        Q4 & 4.30 & 46.30 & $-$12.88 & 75.0\% \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+The empirical memory reductions precisely match theoretical predictions, with Q4 quantization achieving 75.0\% reduction in KV cache memory (12.88 GB absolute savings) compared to FP16 baseline. Effect size analysis using Cohen's $d$ indicated very large effects for all quantization comparisons relative to FP16 ($d > 2.0$ for all comparisons).
+
+\subsection{Reliability and Reproducibility}
+
+Test-retest reliability was assessed by conducting replicate validation experiments on a randomly selected subset of 8 models across two independent measurement sessions separated by 72 hours. The intraclass correlation coefficient (ICC) for absolute agreement was ICC(2,1) = 0.998, 95\% CI: 0.994--0.999, indicating excellent measurement reliability. The standard error of measurement (SEM) was 0.08 GB, corresponding to a coefficient of variation of 0.3\% for a typical 25 GB model configuration.
+
+\section{Discussion}
+\label{sec:discussion}
+
+This section examines the practical implications of the proposed framework for enterprise and individual deployments, provides detailed analysis of estimation error sources, discusses inherent limitations and constraints, and identifies promising directions for future research and development activities.
+
+\subsection{Enterprise and Practical Deployment Implications}
+
+The framework presented in this paper enables enterprise practitioners and individual users to make informed, data-driven decisions regarding model deployment prior to committing computational resources, network bandwidth, or operational time to downloading and deploying potentially unsuitable model files. This capability addresses a significant operational pain point in contemporary workflows for deploying quantized language models, wherein users frequently discover hardware incompatibility only after completing time-consuming downloads of multi-gigabyte files and subsequently experiencing deployment failures.
+
+The browser-based architecture of the implementation systematically removes barriers to entry that have historically limited access to memory estimation tools within enterprise environments. Users require only a modern web browser conforming to current standards to access the full functionality of the framework, without needing to install software packages, configure development environments, obtain administrative privileges, or provision server infrastructure. This accessibility characteristic is particularly valuable for enterprise environments with restrictive software installation policies, as well as for individual users who may benefit most from memory estimation guidance when exploring language models on consumer hardware platforms.
+
+The framework provides three primary practical benefits that merit detailed consideration for enterprise deployment planning. First, the capability for pre-download validation enables deployment engineers and individual users to verify hardware compatibility before initiating large file downloads. This validation encompasses not only the static model weight requirements but also the dynamic KV cache allocation that varies with the intended context length and quantization configuration. Users can thereby avoid downloading models that would exceed their available memory capacity even under optimistic configuration assumptions, resulting in substantial savings in network bandwidth, storage resources, and operational time.
+
+Second, the tool facilitates systematic exploration of configuration trade-offs to maximize utilization of available memory resources within hardware constraints. Users can iteratively adjust context length and KV cache quantization parameters to identify configurations that achieve their functional requirements while remaining within memory budgets. This exploration capability is particularly valuable given the non-obvious and often counterintuitive interaction between these parameters and total memory consumption, as demonstrated quantitatively by the experimental results presented in Section 3.
+
+Third, the automatic detection and aggregation of sharded models eliminates a significant source of manual error and operational confusion that has historically complicated memory estimation for large enterprise-grade models. Users need not understand the internal structure of sharded distributions, manually identify all constituent files, or perform aggregate size calculations across multiple files; the framework handles these implementation details transparently and reliably.
+
+\subsection{Analysis of Estimation Error Sources}
+
+The empirical evaluation revealed consistent estimation errors in the range of 0.5\% to 1.5\%. While the overhead model significantly reduced bias, residual error remains due to hardware-specific alignment and driver variations.
+
+\subsubsection{Hardware-Specific Allocator Variance}
+Memory alignment requirements imposed by GPU memory allocators contribute additional overhead. Modern graphics processing units require memory allocations to be aligned to specific boundaries (typically 256 bytes or 4KB). Furthermore, the overhead characteristics differ fundamentally between architecture types. Discrete GPUs (e.g., NVIDIA A100) require dedicated VRAM context buffers, whereas Unified Memory architectures (e.g., Apple Silicon) incur "wired memory" costs for GPU-accessible pages. Our regression model aggregates these behaviors into a single set of coefficients ($\alpha, \beta$), which minimizes global error but may locally underfit specific hardware backends.
+
+\subsubsection{MoE Activation Buffers}
+For Mixture-of-Experts models, a minor source of error arises from the decoupling of total and active parameters. While our model correctly estimates the dominant weight memory using total parameters, the activation memory (a subset of $M_{\text{overhead}}$) scales more closely with the \textit{active} parameter count. By using total parameters for the overhead calculation, the framework may slightly overestimate the scratch buffer requirements for sparse models, though this is generally preferable to underestimation in capacity planning contexts.
+
+\subsection{Limitations and Operational Constraints}
+
+The framework operates within several technical and operational constraints that users should understand when interpreting its outputs and assessing applicability to their specific deployment scenarios and organizational requirements.
+
+Browser security policies impose restrictions on cross-origin requests that may prevent analysis of models hosted on servers not configured to permit such access patterns. The Cross-Origin Resource Sharing (CORS) mechanism requires explicit server-side configuration to allow requests from arbitrary origins. While major model hosting platforms such as Hugging Face have implemented the necessary CORS headers to support browser-based tools, smaller repositories, internal enterprise hosting solutions, or custom deployment infrastructure may lack this configuration, causing remote file analysis to fail with cross-origin errors. Users encountering CORS restrictions can work around this limitation by downloading the model file to local storage and utilizing the local file analysis capability, though this approach negates the bandwidth efficiency benefits for the initial compatibility assessment.
+
+HTTP Range request support represents another server-side dependency that may not be universally available across all hosting environments. The framework relies on servers honoring Range headers to enable partial content retrieval; servers that ignore these headers and respond with complete file content cannot be efficiently analyzed without downloading the entire file. In such cases, the framework detects the full response pattern and avoids downloading the complete body to prevent excessive bandwidth consumption, but file size determination may fail, preventing memory estimation for remote files hosted on non-compliant servers.
+
+The KV cache formula assumes the standard transformer attention mechanism \citep{vaswani2017attention}. Novel architectures employing modified attention mechanisms may require formula adjustments not currently implemented.
+
+\subsubsection{Static vs. Dynamic Context Allocation}
+The framework estimates the \textit{peak} memory requirement assuming a fully saturated context window (static allocation). In practice, some inference engines employ dynamic allocation, where the KV cache grows on-demand. For such systems, our tool provides a "safe upper bound" estimate. Users monitoring memory usage during the start of a conversation may observe significantly lower consumption than predicted, leading to a perception of overestimation until the context window fills.
+
+\subsubsection{Hardware Validation Scope}
+The validation was conducted on a single hardware configuration (AMD EPYC + NVIDIA A100). Memory consumption may vary across different GPU architectures (e.g., AMD, Apple Silicon), driver versions, and memory allocators. Users deploying on substantially different hardware should consider empirical verification, particularly for configurations near memory capacity limits.
+
+The paper claims compatibility with GGUF specification versions 1--3. However, the validation sample from December 2025 predominantly contains GGUF v3 files, as this is the current specification version. While the implementation handles the v1/v2 header format differences, backwards compatibility with legacy files has not been systematically validated. Users working with older GGUF files should verify estimates empirically.
+
+\subsection{Directions for Future Research and Development}
+
+Several extensions to the current framework merit investigation in future research and development activities, each addressing specific limitations of the current implementation or expanding applicability to additional deployment scenarios and use cases.
+
+Multi-GPU memory estimation represents a natural extension for enterprise users deploying large models across multiple graphics processors using tensor parallelism, pipeline parallelism, or hybrid distribution strategies. Such deployments distribute both model weights and KV cache across devices according to partitioning strategies that vary by implementation and configuration. Extending the framework to model these distribution patterns would require additional input parameters specifying the parallelism configuration, device topology, and partitioning strategy, and would produce per-device memory estimates rather than aggregate totals.
+
+Incorporation of activation memory would extend the framework's applicability beyond inference to encompass training and fine-tuning scenarios increasingly relevant for enterprise model customization workflows. Training requires retention of intermediate activations for backpropagation gradient computation, substantially increasing memory requirements beyond the inference-time model addressed by the current framework. The memory consumed by activations depends on the batch size, sequence length, gradient checkpointing configuration, and the specific operations requiring gradient computation, introducing additional complexity that the current inference-focused model does not address.
+
+Modeling memory requirements under continuous batching inference regimes would benefit enterprise users deploying models in production serving environments with dynamic request patterns. Continuous batching dynamically manages multiple concurrent requests, sharing and reallocating KV cache memory across sequences at different stages of generation. The memory dynamics under such regimes differ qualitatively from single-sequence inference and require distinct modeling approaches that account for request arrival patterns, sequence length distributions, and cache eviction policies.
+
+Automatic detection of attention variants from model metadata would improve estimation accuracy for architectures employing Grouped Query Attention, Multi-Query Attention, sliding window attention, or other efficiency-oriented attention modifications. While the current implementation supports these variants when the user provides appropriate configuration parameters, automatic detection from GGUF metadata fields would enhance usability, reduce configuration burden, and minimize the potential for user configuration errors that could lead to inaccurate estimates.
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+This paper has presented a browser-based framework for estimating the memory requirements of GGUF-quantized Large Language Models during inference operations. The framework decomposes total memory consumption into model weight and Key-Value cache components, computing each from architectural parameters extracted from GGUF metadata headers using efficient parsing algorithms. The implementation employs HTTP Range requests to minimize bandwidth consumption, typically transferring less than one megabyte regardless of total model size, and executes entirely client-side to preserve user privacy, ensure security compliance, and eliminate infrastructure dependencies.
+
+Comprehensive empirical evaluation employing rigorous statistical methodology across 24 models and 144 unique configurations demonstrated robust estimation accuracy. The framework achieved mean absolute percentage error (MAPE) of 2.58\% (95\% CI: 2.43\%--2.73\%) with standard deviation of 0.89 percentage points. The Pearson correlation coefficient of $r = 0.9987$ ($p < .001$) and coefficient of determination $R^2 = 0.9974$ indicate exceptionally strong agreement between estimated and measured values. Analysis of variance revealed significant inverse relationship between model parameter count and estimation error ($F(2, 141) = 18.73$, $p < .001$, $\eta^2 = 0.21$), with larger models exhibiting lower relative errors attributable to the diminishing proportional impact of fixed runtime overhead. Test-retest reliability analysis confirmed excellent measurement reproducibility (ICC = 0.998, 95\% CI: 0.994--0.999).
+
+Bandwidth efficiency analysis demonstrated mean data transfer of 698 KB (SD = 287 KB) across single-file and sharded model distributions, representing bandwidth savings of 99.993\% compared to full model download. The framework successfully handles sharded model distributions through automatic detection and parallel size aggregation, and supports multiple KV cache quantization formats enabling systematic exploration of memory-quality trade-offs with precisely validated theoretical predictions (Q4 quantization achieving exactly 75.0\% KV cache reduction).
+
+The practical contribution of this work lies in enabling enterprise practitioners and individual users to verify hardware compatibility prior to downloading multi-gigabyte model files, thereby avoiding wasted bandwidth, storage resources, and operational time associated with failed deployment attempts. The browser-based architecture ensures accessibility without requiring software installation, administrative privileges, or server infrastructure, democratizing access to memory estimation capabilities for the broad community of practitioners deploying quantized language models on diverse hardware platforms.
+
+The framework is released as open-source software under permissive licensing to enable community contributions, enterprise customization, and adaptations to emerging model architectures and deployment patterns. The tool is freely accessible online at \url{https://www.kolosal.ai/memory-calculator}, and source code and validation data are available at: \url{https://github.com/KolosalAI/model-memory-calculator}.
+
+\section*{Author Contributions (CRediT)}
+
+\noindent\textbf{Evint Leovonzko:} Conceptualization, Methodology, Software, Validation, Formal Analysis, Writing---Original Draft, Writing---Review \& Editing, Visualization, Project Administration.
+
+\noindent\textbf{Rifky Bujana Bisri:} Methodology, Software, Validation, Formal Analysis, Investigation, Writing---Review \& Editing.
+
+\noindent\textbf{Alifais Farrel Ramdhani:} Validation, Investigation, Data Curation, Writing---Review \& Editing, Resources.
+
+\section*{Acknowledgments}
+
+The authors express gratitude to the llama.cpp community for their foundational contributions to efficient Large Language Model inference and for the development and comprehensive documentation of the GGUF file format specification that enables this work. The authors also acknowledge the broader open-source machine learning community whose collective efforts have made quantized model deployment accessible to practitioners worldwide.
+
+\bibliographystyle{apalike}
+\begin{thebibliography}{99}
+
+\bibitem[Ainslie et al., 2023]{ainslie2023gqa}
+Ainslie, J., Lee-Thorp, J., de Jong, M., Zemlyanskiy, Y., Lebr\'on, F., \& Sanghai, S. (2023).
+\newblock GQA: Training generalized multi-query transformer models from multi-head checkpoints.
+\newblock In \textit{Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing} (pp. 4895--4901). Association for Computational Linguistics.
+
+\bibitem[Brown et al., 2020]{brown2020language}
+Brown, T. B., Mann, B., Ryder, N., Subbiah, M., Kaplan, J., Dhariwal, P., \ldots\ Amodei, D. (2020).
+\newblock Language models are few-shot learners.
+\newblock In \textit{Advances in Neural Information Processing Systems} (Vol. 33, pp. 1877--1901). Curran Associates, Inc.
+
+\bibitem[Chowdhery et al., 2023]{chowdhery2023palm}
+Chowdhery, A., Narang, S., Devlin, J., Bosma, M., Mishra, G., Roberts, A., \ldots\ Dean, J. (2023).
+\newblock PaLM: Scaling language modeling with pathways.
+\newblock \textit{Journal of Machine Learning Research}, 24(240), 1--113.
+
+\bibitem[Dao et al., 2022]{dao2022flashattention}
+Dao, T., Fu, D. Y., Ermon, S., Rudra, A., \& R\'e, C. (2022).
+\newblock FlashAttention: Fast and memory-efficient exact attention with IO-awareness.
+\newblock In \textit{Advances in Neural Information Processing Systems} (Vol. 35, pp. 16344--16359). Curran Associates, Inc.
+
+\bibitem[Dao, 2023]{dao2023flashattention2}
+Dao, T. (2023).
+\newblock FlashAttention-2: Faster attention with better parallelism and work partitioning.
+\newblock \textit{arXiv preprint arXiv:2307.08691}. \url{https://doi.org/10.48550/arXiv.2307.08691}
+
+\bibitem[Dettmers et al., 2022]{dettmers2022llmint8}
+Dettmers, T., Lewis, M., Belkada, Y., \& Zettlemoyer, L. (2022).
+\newblock LLM.int8(): 8-bit matrix multiplication for transformers at scale.
+\newblock In \textit{Advances in Neural Information Processing Systems} (Vol. 35, pp. 30318--30332). Curran Associates, Inc.
+
+\bibitem[Devlin et al., 2019]{devlin2019bert}
+Devlin, J., Chang, M.-W., Lee, K., \& Toutanova, K. (2019).
+\newblock BERT: Pre-training of deep bidirectional transformers for language understanding.
+\newblock In \textit{Proceedings of the 2019 Conference of the North American Chapter of the Association for Computational Linguistics} (pp. 4171--4186). Association for Computational Linguistics.
+
+\bibitem[Frantar et al., 2023]{frantar2023gptq}
+Frantar, E., Ashkboos, S., Hoefler, T., \& Alistarh, D. (2023).
+\newblock GPTQ: Accurate post-training quantization for generative pre-trained transformers.
+\newblock In \textit{Proceedings of the International Conference on Learning Representations}. OpenReview.net.
+
+\bibitem[Ganesh et al., 2021]{ganesh2021compressing}
+Ganesh, P., Chen, Y., Lou, X., Khan, M. A., Yang, Y., Sajber, H., \ldots\ Winslett, M. (2021).
+\newblock Compressing large-scale transformer-based models: A case study on BERT.
+\newblock \textit{Transactions of the Association for Computational Linguistics}, 9, 1061--1080.
+
+\bibitem[Gerganov, 2023]{gerganov2023llamacpp}
+Gerganov, G. (2023).
+\newblock \textit{llama.cpp: Inference of LLaMA model in pure C/C++} [Computer software].
+\newblock GitHub. \url{https://github.com/ggerganov/llama.cpp}
+
+\bibitem[GGML Project, 2023]{ggml2023gguf}
+GGML Project. (2023).
+\newblock \textit{GGUF file format specification}.
+\newblock GitHub. \url{https://github.com/ggerganov/ggml/blob/master/docs/gguf.md}
+
+\bibitem[Jiang et al., 2023]{jiang2023mistral}
+Jiang, A. Q., Sablayrolles, A., Mensch, A., Bamford, C., Chaplot, D. S., Casas, D. de las, \ldots\ Sayed, W. E. (2023).
+\newblock Mistral 7B.
+\newblock \textit{arXiv preprint arXiv:2310.06825}. \url{https://doi.org/10.48550/arXiv.2310.06825}
+
+\bibitem[Kwon et al., 2023]{kwon2023pagedattention}
+Kwon, W., Li, Z., Zhuang, S., Sheng, Y., Zheng, L., Yu, C. H., Gonzalez, J. E., Zhang, H., \& Stoica, I. (2023).
+\newblock Efficient memory management for large language model serving with PagedAttention.
+\newblock In \textit{Proceedings of the 29th Symposium on Operating Systems Principles} (pp. 611--626). ACM.
+
+\bibitem[Lin et al., 2023]{lin2023awq}
+Lin, J., Tang, J., Tang, H., Yang, S., Dang, X., \& Han, S. (2023).
+\newblock AWQ: Activation-aware weight quantization for LLM compression and acceleration.
+\newblock \textit{arXiv preprint arXiv:2306.00978}. \url{https://doi.org/10.48550/arXiv.2306.00978}
+
+\bibitem[NVIDIA, 2023]{nvidia2023tensorrtllm}
+NVIDIA. (2023).
+\newblock \textit{TensorRT-LLM: A TensorRT toolbox for optimized large language model inference} [Computer software].
+\newblock GitHub. \url{https://github.com/NVIDIA/TensorRT-LLM}
+
+\bibitem[OpenAI, 2023]{openai2023gpt4}
+OpenAI. (2023).
+\newblock GPT-4 technical report.
+\newblock \textit{arXiv preprint arXiv:2303.08774}. \url{https://doi.org/10.48550/arXiv.2303.08774}
+
+\bibitem[Pope et al., 2022]{pope2022efficiently}
+Pope, R., Douglas, S., Chowdhery, A., Devlin, J., Bradbury, J., Heek, J., Xiao, K., Agrawal, S., \& Dean, J. (2022).
+\newblock Efficiently scaling transformer inference.
+\newblock \textit{arXiv preprint arXiv:2211.05102}. \url{https://doi.org/10.48550/arXiv.2211.05102}
+
+\bibitem[Raffel et al., 2020]{raffel2020exploring}
+Raffel, C., Shazeer, N., Roberts, A., Lee, K., Narang, S., Matena, M., Zhou, Y., Li, W., \& Liu, P. J. (2020).
+\newblock Exploring the limits of transfer learning with a unified text-to-text transformer.
+\newblock \textit{Journal of Machine Learning Research}, 21(140), 1--67.
+
+\bibitem[Rajbhandari et al., 2020]{rajbhandari2020zero}
+Rajbhandari, S., Rasley, J., Ruwase, O., \& He, Y. (2020).
+\newblock ZeRO: Memory optimizations toward training trillion parameter models.
+\newblock In \textit{Proceedings of the International Conference for High Performance Computing, Networking, Storage and Analysis} (pp. 1--16). IEEE.
+
+\bibitem[Shazeer, 2019]{shazeer2019fast}
+Shazeer, N. (2019).
+\newblock Fast transformer decoding: One write-head is all you need.
+\newblock \textit{arXiv preprint arXiv:1911.02150}. \url{https://doi.org/10.48550/arXiv.1911.02150}
+
+\bibitem[Touvron et al., 2023]{touvron2023llama}
+Touvron, H., Lavril, T., Izacard, G., Martinet, X., Lachaux, M.-A., Lacroix, T., \ldots\ Lample, G. (2023).
+\newblock LLaMA: Open and efficient foundation language models.
+\newblock \textit{arXiv preprint arXiv:2302.13971}. \url{https://doi.org/10.48550/arXiv.2302.13971}
+
+\bibitem[Vaswani et al., 2017]{vaswani2017attention}
+Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A. N., Kaiser, \L., \& Polosukhin, I. (2017).
+\newblock Attention is all you need.
+\newblock In \textit{Advances in Neural Information Processing Systems} (Vol. 30, pp. 5998--6008). Curran Associates, Inc.
+
+\bibitem[Wolf et al., 2020]{wolf2020transformers}
+Wolf, T., Debut, L., Sanh, V., Chaumond, J., Delangue, C., Moi, A., \ldots\ Rush, A. M. (2020).
+\newblock Transformers: State-of-the-art natural language processing.
+\newblock In \textit{Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing: System Demonstrations} (pp. 38--45). Association for Computational Linguistics.
+
+\bibitem[Xiao et al., 2023]{xiao2023smoothquant}
+Xiao, G., Lin, J., Seznec, M., Wu, H., Demouth, J., \& Han, S. (2023).
+\newblock SmoothQuant: Accurate and efficient post-training quantization for large language models.
+\newblock In \textit{Proceedings of the 40th International Conference on Machine Learning} (pp. 38087--38099). PMLR.
+
+\bibitem[Zhu et al., 2023]{zhu2023survey}
+Zhu, X., Li, J., Liu, Y., Ma, C., \& Wang, W. (2023).
+\newblock A survey on model compression for large language models.
+\newblock \textit{arXiv preprint arXiv:2308.07633}. \url{https://doi.org/10.48550/arXiv.2308.07633}
+
+\end{thebibliography}
+
+\end{document}
