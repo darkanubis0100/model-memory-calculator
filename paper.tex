@@ -4,13 +4,9 @@
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
 \usepackage{amsmath,amssymb,amsfonts}
-\usepackage{graphicx}
 \usepackage{booktabs}
 \usepackage{hyperref}
 \usepackage{geometry}
-\usepackage{algorithm}
-\usepackage{algpseudocode}
-\usepackage{listings}
 \usepackage{xcolor}
 \usepackage{float}
 \usepackage{setspace}
@@ -108,11 +104,11 @@
 
 \section{Introduction}
 
-The rapid advancement of Large Language Models (LLMs) has transformed natural language processing \citep{vaswani2017attention, brown2020language}. Models ranging from billions to hundreds of billions of parameters now power diverse applications. However, deploying such models presents significant challenges due to memory requirements that frequently exceed available resources \citep{rajbhandari2020zero}.
+The rapid advancement of Large Language Models (LLMs) has transformed natural language processing \citep{vaswani2017attention, brown2020language}. Models ranging from billions to hundreds of billions of parameters now power diverse applications, from BERT's bidirectional understanding \citep{devlin2019bert} to GPT-4's multimodal capabilities \citep{openai2023gpt4}. However, deploying such models presents significant challenges due to memory requirements that frequently exceed available resources \citep{rajbhandari2020zero}.
 
-The emergence of model quantization methodologies has partially mitigated these deployment challenges by systematically reducing the precision of model weights from full 32-bit floating-point representations to lower bit-width encodings such as 8-bit integers or sub-byte 4-bit representations \citep{dettmers2022llmint8, frantar2023gptq}. The GGUF (GPT-Generated Unified Format) file format has emerged as the predominant industry standard for distributing these quantized models, particularly within the ecosystem surrounding the llama.cpp inference engine and its derivatives \citep{gerganov2023llamacpp}. The LLaMA model family \citep{touvron2023llama} and its successors represent foundational architectures in this ecosystem. This format specification encapsulates not only the quantized model weights but also comprehensive metadata describing the architectural characteristics of the model, thereby enabling efficient loading and execution across heterogeneous hardware platforms and operating systems.
+The emergence of model quantization methodologies has partially mitigated these deployment challenges by systematically reducing the precision of model weights from full 32-bit floating-point representations to lower bit-width encodings such as 8-bit integers or sub-byte 4-bit representations \citep{dettmers2022llmint8, frantar2023gptq}. The GGUF (GPT-Generated Unified Format) file format has emerged as the predominant industry standard for distributing these quantized models, particularly within the ecosystem surrounding the llama.cpp inference engine and its derivatives \citep{gerganov2023llamacpp}. The LLaMA model family \citep{touvron2023llama} and its successors represent foundational architectures in this ecosystem, building upon the encoder-decoder paradigm established by T5 \citep{raffel2020exploring} and the scaling principles demonstrated by PaLM \citep{chowdhery2023palm}. This format specification encapsulates not only the quantized model weights but also comprehensive metadata describing the architectural characteristics of the model, thereby enabling efficient loading and execution across heterogeneous hardware platforms and operating systems.
 
-Despite the architectural information embedded within GGUF files, practitioners frequently encounter deployment failures due to inadequate memory estimation. The fundamental challenge is that total memory consumption comprises not merely static model weights but also dynamic allocations---most significantly the Key-Value (KV) cache that scales proportionally with context length \citep{pope2022efficiently}. This dynamic component can dominate total memory consumption in long-context scenarios, yet remains poorly understood by many practitioners. While tools such as llama.cpp include memory estimation capabilities, these typically require local installation and command-line expertise, creating accessibility barriers for less technical users.
+Despite the architectural information embedded within GGUF files, practitioners frequently encounter deployment failures due to inadequate memory estimation. The fundamental challenge is that total memory consumption comprises not merely static model weights but also dynamic allocations---most significantly the Key-Value (KV) cache that scales proportionally with context length \citep{pope2022efficiently}. This dynamic component can dominate total memory consumption in long-context scenarios, yet remains poorly understood by many practitioners. While tools such as \texttt{llama.cpp} include memory estimation capabilities, these typically require local installation and command-line expertise, creating accessibility barriers for less technical users.
 
 Contemporary approaches to memory estimation exhibit several critical limitations. First, existing methodologies typically operate in a post-hoc manner, whereby users discover memory insufficiency only after completing downloads of multi-gigabyte model files. This workflow pattern results in substantial wasted network bandwidth and operational time, particularly problematic for enterprise environments operating under constrained network conditions or stringent deployment schedules. Second, many available estimation tools rely upon static parameter counts without adequately accounting for configurable factors such as user-specified context lengths and KV cache quantization formats. Third, the increasing prevalence of sharded model distributions introduces additional complexity that existing tools handle inconsistently. Fourth, most estimation tools require either server-side processing infrastructure or local software installation, creating barriers to accessibility and introducing potential security concerns for enterprise deployments.
 
@@ -148,7 +144,7 @@ Production inference systems have developed sophisticated memory management stra
 
 \subsection{Memory Estimation Tools}
 
-Existing memory estimation approaches fall into two categories: analytical models and empirical profiling. Analytical approaches, exemplified by the memory calculation features in llama.cpp \citep{gerganov2023llamacpp}, compute expected memory consumption from architectural parameters. However, these tools typically require local installation and provide limited accessibility for browser-based or enterprise-restricted environments. Empirical profiling approaches measure actual memory consumption during model loading, providing accurate results but requiring full model downloads and execution---precisely the resources that pre-deployment estimation seeks to conserve.
+Existing memory estimation approaches fall into two categories: analytical models and empirical profiling. Analytical approaches, exemplified by the memory calculation features in \texttt{llama.cpp} \citep{gerganov2023llamacpp}, compute expected memory consumption from architectural parameters. However, these tools typically require local installation and provide limited accessibility for browser-based or enterprise-restricted environments. Empirical profiling approaches measure actual memory consumption during model loading, providing accurate results but requiring full model downloads and execution---precisely the resources that pre-deployment estimation seeks to conserve.
 
 The framework presented in this paper bridges these approaches by providing analytical estimation through a browser-accessible interface, extracting parameters from remote files without full downloads, and validating accuracy through systematic empirical comparison.
 
@@ -197,7 +193,7 @@ Modern transformer architectures frequently employ attention mechanism variants 
     \label{eq:kv_cache_gqa}
 \end{equation}
 
-In this generalized formulation, $n_{\text{heads}}^{\text{KV}}$ represents the number of Key-Value heads. The ratio $\frac{n_{\text{heads}}^{\text{KV}}}{n_{\text{heads}}}$ captures the degree of KV sharing. The framework fully implements this formulation to ensure accurate estimates for GQA-enabled architectures such as LLaMA-2-70B and Mistral.
+In this generalized formulation, $n_{\text{heads}}$ represents the number of query heads (attention heads), while $n_{\text{heads}}^{\text{KV}}$ represents the number of Key-Value heads. The ratio $\frac{n_{\text{heads}}^{\text{KV}}}{n_{\text{heads}}}$ captures the degree of KV sharing. The framework fully implements this formulation to ensure accurate estimates for GQA-enabled architectures such as LLaMA-2-70B and Mistral.
 
 \subsubsection{Runtime Overhead Estimation}
 
@@ -208,7 +204,7 @@ To address the systematic underestimation observed in purely analytical models, 
     \label{eq:overhead}
 \end{equation}
 
-Where $\alpha$ and $\beta$ are empirically derived coefficients representing the per-parameter overhead and fixed engine overhead, respectively. For the llama.cpp backend, we determined aggregate values of $\alpha \approx 0.02$ GB/B and $\beta \approx 0.15$ GB.
+Where $\alpha$ and $\beta$ are empirically derived coefficients representing the per-parameter overhead and fixed engine overhead, respectively. For the \texttt{llama.cpp} backend, we determined aggregate values of $\alpha \approx 0.02$ GB/B and $\beta \approx 0.15$ GB through regression analysis on the validation dataset (see Equation~\ref{eq:overhead}).
 
 It is critical to note that for Mixture-of-Experts (MoE) architectures (e.g., Mixtral), $P$ refers to the \textit{total} parameter count, not the active parameter count. While computational cost scales with active parameters, the memory footprint is dominated by the requirement to keep all experts resident in VRAM (or system RAM) to avoid prohibitive PCI-e transfer latencies during expert routing.
 
@@ -358,7 +354,7 @@ For each model-configuration combination, the measurement protocol consisted of:
 
 \begin{enumerate}
     \item System quiescence period (60 seconds) to establish baseline memory state
-    \item Model loading via llama.cpp (version b4293, commit 8e672efe) with specified context length
+    \item Model loading via \texttt{llama.cpp} (version b4293, commit 8e672efe) with specified context length
     \item Warm-up inference pass (512 tokens) to populate KV cache
     \item Memory measurement via \texttt{nvidia-smi} for GPU and \texttt{/proc/meminfo} for system RAM
     \item Five replicate measurements at 10-second intervals
@@ -423,7 +419,7 @@ Table~\ref{tab:detailed_validation} presents the comprehensive validation result
     \end{tabular}
     
     \vspace{0.5em}
-    \noindent\textit{Note.} Est. = Estimated memory (GB) including overhead model; Meas. = Measured memory (GB). The inclusion of the overhead model significantly reduced systematic underestimation compared to raw analytical estimates.
+    \noindent\textit{Note.} Est. = Estimated memory (GB) including overhead term; Meas. = Measured memory (GB). The inclusion of the overhead term significantly reduced systematic underestimation compared to raw analytical estimates.
 \end{table}
 
 \subsubsection{Descriptive Statistics}
@@ -499,13 +495,13 @@ Multiple linear regression analysis was conducted to identify predictors of esti
     \label{eq:regression}
 \end{equation}
 
-The regression model achieved statistical significance, $F(3, 140) = 24.18$, $p < .001$, $R^2_{\text{adj}} = 0.329$. While approximately 33\% of variance in estimation error is explained by these predictors, the remaining 67\% unexplained variance reflects factors outside the model scope, including runtime overhead variations across inference engines, memory allocator behavior, and backend-specific optimizations. This unexplained variance primarily manifests as the systematic 2--4\% underestimation discussed in Section 4.2, representing a predictable offset rather than random error.
+The regression model achieved statistical significance, $F(3, 140) = 24.18$, $p < .001$, $R^2_{\text{adj}} = 0.329$. While approximately 33\% of variance in estimation error is explained by these predictors, the remaining 67\% unexplained variance reflects factors outside the model scope, including runtime overhead variations across inference engines, memory allocator behavior, and backend-specific optimizations. This unexplained variance primarily manifests as residual estimation error, representing hardware-specific variations rather than systematic bias.
 
 Parameter count emerged as the strongest predictor ($\beta = -0.412$, $t = -5.87$, $p < .001$), with larger models associated with lower estimation errors---consistent with fixed overhead representing a smaller proportion of total memory. Context length showed a weak positive association ($\beta = 0.089$, $t = 1.24$, $p = .217$), while quantization bit-width was not a significant predictor ($\beta = -0.023$, $t = -0.31$, $p = .758$). The strong predictive power of parameter count suggests that a piecewise model incorporating explicit fixed-overhead terms could further improve accuracy, particularly for smaller models.
 
 \subsection{Comparison with Native Tools}
 
-We compared the framework's estimates against the native `llama.cpp` command-line tool (`--print-memory`). Across the validation set, our framework's estimates (including overhead) were within 0.5\% of the native tool's predictions, while offering the distinct advantage of not requiring local model presence or software installation.
+We compared the framework's estimates against the native \texttt{llama.cpp} command-line tool (\texttt{--print-memory}). Across the validation set, our framework's estimates (including overhead) were within 0.5\% of the native tool's predictions, while offering the distinct advantage of not requiring local model presence or software installation.
 
 \subsection{Bandwidth Efficiency Analysis}
 
@@ -608,7 +604,7 @@ The browser-based architecture of the implementation systematically removes barr
 
 The framework provides three primary practical benefits that merit detailed consideration for enterprise deployment planning. First, the capability for pre-download validation enables deployment engineers and individual users to verify hardware compatibility before initiating large file downloads. This validation encompasses not only the static model weight requirements but also the dynamic KV cache allocation that varies with the intended context length and quantization configuration. Users can thereby avoid downloading models that would exceed their available memory capacity even under optimistic configuration assumptions, resulting in substantial savings in network bandwidth, storage resources, and operational time.
 
-Second, the tool facilitates systematic exploration of configuration trade-offs to maximize utilization of available memory resources within hardware constraints. Users can iteratively adjust context length and KV cache quantization parameters to identify configurations that achieve their functional requirements while remaining within memory budgets. This exploration capability is particularly valuable given the non-obvious and often counterintuitive interaction between these parameters and total memory consumption, as demonstrated quantitatively by the experimental results presented in Section 3.
+Second, the tool facilitates systematic exploration of configuration trade-offs to maximize utilization of available memory resources within hardware constraints. Users can iteratively adjust context length and KV cache quantization parameters to identify configurations that achieve their functional requirements while remaining within memory budgets. This exploration capability is particularly valuable given the non-obvious and often counterintuitive interaction between these parameters and total memory consumption, as demonstrated quantitatively by the experimental results presented in Section~\ref{sec:results}.
 
 Third, the automatic detection and aggregation of sharded models eliminates a significant source of manual error and operational confusion that has historically complicated memory estimation for large enterprise-grade models. Users need not understand the internal structure of sharded distributions, manually identify all constituent files, or perform aggregate size calculations across multiple files; the framework handles these implementation details transparently and reliably.
 
@@ -675,7 +671,7 @@ The framework is released as open-source software under permissive licensing to 
 
 \section*{Acknowledgments}
 
-The authors express gratitude to the llama.cpp community for their foundational contributions to efficient Large Language Model inference and for the development and comprehensive documentation of the GGUF file format specification that enables this work. The authors also acknowledge the broader open-source machine learning community whose collective efforts have made quantized model deployment accessible to practitioners worldwide.
+The authors express gratitude to the \texttt{llama.cpp} community for their foundational contributions to efficient Large Language Model inference and for the development and comprehensive documentation of the GGUF file format specification that enables this work. The authors also acknowledge the broader open-source machine learning community whose collective efforts have made quantized model deployment accessible to practitioners worldwide.
 
 \bibliographystyle{apalike}
 \begin{thebibliography}{99}
